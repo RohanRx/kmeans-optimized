@@ -11,7 +11,7 @@
 #define DIMS 16
 #define NUM_CENTROIDS 256
 #define POINTS_PER_BATCH 240
-#define ITERS 100
+#define ITERS 1000
 
 __global__ void kmeans_assignment_kernel(
     float* points, 
@@ -25,6 +25,8 @@ __global__ void kmeans_assignment_kernel(
     __shared__ float s_centroids[NUM_CENTROIDS * DIMS];          // 16.38 KB
     __shared__ float s_accumulators[NUM_CENTROIDS * DIMS];       // 16.38 KB
     __shared__ int s_counters[NUM_CENTROIDS];
+    float r_buff[4] = {0.0};
+    bool is_first_batch = true;
 
     // 1 threadblock only per SM
     int tid = threadIdx.x;
@@ -50,16 +52,53 @@ __global__ void kmeans_assignment_kernel(
     while (batch_idx < total_batches) {
         //start loading batch of points into shared memory
         int start_idx = batch_idx * POINTS_PER_BATCH;
-        for(int i = tid; i < POINTS_PER_BATCH*DIMS; i += blockDim.x) {
-            int d = i / POINTS_PER_BATCH; //the dimension I am grabbing
-            int p = i % POINTS_PER_BATCH; // the point I am grabbing
-            s_points[i] = points[d * total_points + start_idx + p];
+        
+        if (is_first_batch) {
+            // First iteration: Load directly from Global Memory -> Shared Memory
+            #pragma unroll
+            for (int step = 0; step < 4; ++step) {
+                int i = tid + step * blockDim.x;
+                if (i < POINTS_PER_BATCH * DIMS) {
+                    int d = i / POINTS_PER_BATCH; 
+                    int p = i % POINTS_PER_BATCH; 
+                    s_points[i] = points[d * total_points + start_idx + p];
+                }
+            }
+            is_first_batch = false;
+        } else {
+            // Subsequent iterations: Move prefetched data from Registers -> Shared Memory
+            #pragma unroll
+            for (int step = 0; step < 4; ++step) {
+                int i = tid + step * blockDim.x;
+                if (i < POINTS_PER_BATCH * DIMS) {
+                    s_points[i] = r_buff[step]; // Uses registers directly via constant index!
+                }
+            }
         }
+
+        // bring next batch into registers
+        int next_batch_idx = batch_idx + gridDim.x;
+        if (next_batch_idx < total_batches) {
+            int next_start_idx = next_batch_idx * POINTS_PER_BATCH;
+            
+            #pragma unroll
+            for (int step = 0; step < 4; ++step) {
+                int i = tid + step * blockDim.x;
+                if (i < POINTS_PER_BATCH * DIMS) {
+                    int d = i / POINTS_PER_BATCH; 
+                    int p = i % POINTS_PER_BATCH; 
+                    r_buff[step] = points[d * total_points + next_start_idx + p];
+                }
+            }
+        }
+
+        // Wait for all threads to finish populating shared memory
         __syncthreads();
 
-        int warp_point_start = wid * 30;
+        int points_per_warp = POINTS_PER_BATCH/(blockDim.x/32);
+        int warp_point_start = wid * points_per_warp;
 
-        for (int p = 0; p < 30; ++p) { // loop points (all threads in warp get same points)
+        for (int p = 0; p < points_per_warp; ++p) { // loop points (all threads in warp get same points)
             int p_idx = warp_point_start + p;
             float min_dist = FLT_MAX;
             int closest_centroid = -1;
@@ -142,38 +181,38 @@ __global__ void kmeans_update_kernel(float* centroids, float* accumulators, int*
 }
 
 int main() {
-
     int num_blocks = 1024;
-    int threads_per_block = 256;
+    int threads_per_block = 960;
     
-    // total_points must be a multiple of (POINTS_PER_BATCH * num_blocks).
-    //int total_points = num_blocks * POINTS_PER_BATCH * 1;
-
-    std::vector<float> temp_aos_points;
-    std::ifstream file("dataset.txt"); // Change this to your CSV filename
-    std::string line;
+    // Change this to your actual binary dataset filename
+    std::string filename = "sample_datasets/random_N245760_D16.bin"; 
+    
+    // 1. Open the file in binary mode and start at the end to get file size
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
     if (!file.is_open()) {
-        std::cerr << "Error: Could not open dataset.csv\n";
+        std::cerr << "Error: Could not open " << filename << "\n";
         return 1;
     }
 
-    std::cout << "Parsing CSV...\n";
+    // Calculate sizes based on the binary file byte footprint
+    std::streamsize file_size = file.tellg();
+    file.seekg(0, std::ios::beg); // Rewind back to the beginning
 
-    // 1. Read the CSV line by line into a temporary vector
-    while (std::getline(file, line)) {
-        std::stringstream ss(line);
-        std::string value;
-        while (std::getline(ss, value, ',')) {
-            temp_aos_points.push_back(std::stof(value));
-        }
+    size_t total_floats = file_size / sizeof(float);
+    int total_points = total_floats / DIMS;
+
+    std::cout << "Reading binary dataset...\n";
+
+    // 2. Read the entire raw binary dump directly into our AoS vector
+    std::vector<float> temp_aos_points(total_floats);
+    if (!file.read(reinterpret_cast<char*>(temp_aos_points.data()), file_size)) {
+        std::cerr << "Error: Failed to read binary data completely.\n";
+        return 1;
     }
     file.close();
 
-    // 2. Calculate totals directly (No padding required)
-    int total_points = temp_aos_points.size() / DIMS;
-
-    std::cout << "Successfully loaded " << total_points << " perfectly divisible points.\n";
+    std::cout << "Successfully loaded " << total_points << " points.\n";
 
     // Memory sizes
     size_t points_bytes = total_points * DIMS * sizeof(float);
@@ -186,7 +225,7 @@ int main() {
     float* h_accumulators = (float*)malloc(accumulators_bytes);
     int* h_counters = (int*)malloc(counters_bytes);
 
-    // 3. Convert AoS (CSV layout) to SoA (Kernel layout) directly
+    // 3. Convert AoS (Binary layout) to SoA (Kernel layout) directly
     for (int p = 0; p < total_points; ++p) {
         for (int d = 0; d < DIMS; ++d) {
             h_points[d * total_points + p] = temp_aos_points[p * DIMS + d];
@@ -206,13 +245,13 @@ int main() {
     float *d_points, *d_centroids, *d_accumulators;
     int *d_counters;
 
-    //initialize device memory
+    // initialize device memory
     cudaMalloc(&d_points, points_bytes);
     cudaMalloc(&d_centroids, centroids_bytes);
     cudaMalloc(&d_accumulators, accumulators_bytes);
     cudaMalloc(&d_counters, counters_bytes);
 
-    //copy data to device
+    // copy data to device
     cudaMemcpy(d_points, h_points, points_bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(d_centroids, h_centroids, centroids_bytes, cudaMemcpyHostToDevice);
     
@@ -250,23 +289,26 @@ int main() {
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     std::cout << "Kernel Execution Time: " << milliseconds << " ms\n";
+    std::cout << "Time Per Run: " << milliseconds/ITERS << " ms\n";
 
-    //copy data back
+    // copy data back
     cudaMemcpy(h_centroids, d_centroids, centroids_bytes, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_counters, d_counters, counters_bytes, cudaMemcpyDeviceToHost);
 
     // Verify some output (Optional)
     std::cout << "\n--- Verification ---\n";
-    std::cout << "Points assigned to Centroid 0: " << h_counters[0] << "\n";
+    for (int i = 0; i < 16; ++i) {
+        std::cout << "Points assigned to Centroid" << i << ":" << h_counters[i] << "\n";
     
-    std::cout << "Centroid 0 Coordinates: [ ";
-    for (int d = 0; d < DIMS; ++d) {
-        // Because of SoA layout, dimension 'd' for centroid '0' is at index (d * NUM_CENTROIDS + 0)
-        std::cout << h_centroids[d * NUM_CENTROIDS + 0];
-        
-        if (d < DIMS - 1) std::cout << ", ";
-    }
-    std::cout << " ]\n";    
+        std::cout << "Centroid" << i << "Coordinates: [ ";
+        for (int d = 0; d < DIMS; ++d) {
+            // Because of SoA layout, dimension 'd' for centroid '0' is at index (d * NUM_CENTROIDS + 0)
+            std::cout << h_centroids[d * NUM_CENTROIDS + i];
+            
+            if (d < DIMS - 1) std::cout << ", ";
+        }
+        std::cout << " ]\n"; 
+    }   
     // Free device memory
     cudaFree(d_points);
     cudaFree(d_centroids);
