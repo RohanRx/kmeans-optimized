@@ -49,7 +49,7 @@ def run_benchmark(filename, n_samples, n_features, K):
     for _ in range(REPEATS):
         model = KMeans(
             n_clusters=K,
-            init='random',
+            init=X[:K],
             n_init=1,
             max_iter=ITERATIONS,
             algorithm='lloyd',
