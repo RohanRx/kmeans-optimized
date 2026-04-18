@@ -2,101 +2,95 @@ import time
 import numpy as np
 from sklearn.cluster import KMeans
 import os
-import matplotlib.pyplot as plt
+import csv
 
-DIMENSIONS = [16, 512]
+BASE_DATA_DIR = "data_D16"
+CATEGORIES = ["easy", "hard"]
+OUTPUT_DIR = "output"
+CSV_OUTPUT = os.path.join(OUTPUT_DIR, "cpu_baseline.csv")
 
-BASE = 240
-START_POWER = 4
-ITERATIONS = 100
-REPEATS = 1
-DATA_DIR = "datasets"
-
-# dimension-specific K
-K_VALUES = {
-    16: 256,
-    512: 24
-}
-
-# dimension-specific limits
-MAX_POINTS = {
-    16: 16_000_000,
-    512: 1_000_000
-}
-
-def get_sizes(D):
-    sizes = []
-    i = START_POWER
-
-    while True:
-        n = BASE * (2 ** i)
-        if n > MAX_POINTS[D]:
-            break
-        sizes.append(n)
-        i += 1
-
-    return sizes
+ITERATIONS = 1000
 
 def load_bin(filename, n_samples, n_features):
-    X = np.fromfile(filename, dtype=np.float32)
-    return X.reshape(n_samples, n_features)
+    return np.fromfile(filename, dtype=np.float32).reshape(n_samples, n_features)
 
-def run_benchmark(filename, n_samples, n_features, K):
+def run_benchmark(category, filename, n_samples, n_features, K):
+    if not os.path.exists(filename):
+        print("File not found: {}".format(filename))
+        return None
+
     X = load_bin(filename, n_samples, n_features)
+    
+    # algorithm='full' for Scikit-Learn 0.24.2 / Python 3.6.8
+    model = KMeans(
+        n_clusters=K,
+        init=X[:K],
+        n_init=1,
+        max_iter=ITERATIONS,
+        algorithm='full',
+        random_state=42
+    )
 
-    times = []
+    start = time.time()
+    model.fit(X)
+    end = time.time()
+    
+    total_time = end - start
+    iters = model.n_iter_
+    ms_per_iter = (total_time / iters) * 1000
 
-    for _ in range(REPEATS):
-        model = KMeans(
-            n_clusters=K,
-            init=X[:K],
-            n_init=1,
-            max_iter=ITERATIONS,
-            algorithm='lloyd',
-            random_state=42
-        )
+    print("[{}] N: {:>8} | Iters: {:>3} | Time: {:.4f}s | Latency: {:.2f} ms/iter".format(
+          category.upper(), n_samples, iters, total_time, ms_per_iter))
 
-        start = time.time()
-        model.fit(X)
-        end = time.time()
-
-        times.append(end - start)
-
-    avg = np.mean(times)
-    std = np.std(times)
-
-    print(f"N: {n_samples:>9} | D: {n_features:>3} | K: {K:>3} | "f"Avg: {avg:.4f}s | Std: {std:.4f}s")
-
-    return avg
+    return {
+        "category": category,
+        "n": n_samples,
+        "d": n_features,
+        "k": K,
+        "iters": iters,
+        "total_time_s": total_time,
+        "ms_per_iter": ms_per_iter
+    }
 
 def main():
-    for D in DIMENSIONS:
-        K = K_VALUES[D]
-        sizes = get_sizes(D)
-        results = []
+    D = 16
+    K = 256
+    
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+    
+    with open(CSV_OUTPUT, mode='w') as csv_file:
+        fieldnames = ['category', 'n', 'd', 'k', 'iters', 'total_time_s', 'ms_per_iter']
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
 
-        print(f"\n===== Dimension {D} (K={K}) =====")
+        for cat in CATEGORIES:
+            print("\n--- Benchmarking {} Datasets ---".format(cat.upper()))
+            folder = os.path.join(BASE_DATA_DIR, cat)
+            
+            if not os.path.exists(folder):
+                print("Directory not found: {}".format(folder))
+                continue
 
-        for N in sizes:
-            filename = os.path.join(
-                DATA_DIR,
-                f"blobs_N{N}_D{D}_K{K}.bin"
-            )
+            # Sort files numerically by N
+            files = sorted([f for f in os.listdir(folder) if f.endswith('.bin')], 
+                           key=lambda x: int(x.split('_')[1][1:]))
+            
+            for f in files:
+                try:
+                    parts = f.split('_')
+                    N = int(parts[1][1:]) 
+                    path = os.path.join(folder, f)
+                    
+                    res = run_benchmark(cat, path, N, D, K)
+                    if res:
+                        writer.writerow(res)
+                        csv_file.flush()
+                        
+                except Exception as e:
+                    print("Skipping {}: {}".format(f, e))
 
-            avg = run_benchmark(filename, N, D, K)
-            results.append(avg)
-
-        plt.figure()
-
-        plt.plot(sizes, results, marker='o')
-        plt.xlabel("Number of Points (N)")
-        plt.ylabel("Time (seconds)")
-        plt.title(f"CPU KMeans Baseline (D={D}, K={K})")
-        plt.grid()
-
-        output_name = f"baseline_cpu_D{D}.png"
-        plt.savefig(output_name)
-        plt.show()
+    print("\n[✓] All results saved to: {}".format(CSV_OUTPUT))
 
 if __name__ == "__main__":
     main()
