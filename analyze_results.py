@@ -64,5 +64,15 @@ def main():
     print("\n--- Speedup Metrics Summary ---")
     print(report.to_string(index=False))
 
+    # Calculate different types of speedup metrics
+    avg_speedup = df['speedup'].mean()
+    peak_speedup = df['speedup'].max()
+    min_speedup = df['speedup'].min()
+
+    print("\n--- GPU Acceleration Summary ---")
+    print("Max Speedup:    {:.2f}x".format(peak_speedup))
+    print("Minimum Speedup: {:.2f}x".format(min_speedup))
+    print("Average Speedup: {:.2f}x".format(avg_speedup))
+
 if __name__ == "__main__":
     main()
