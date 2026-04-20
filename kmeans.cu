@@ -11,7 +11,6 @@
 #define DIMS 16
 #define NUM_CENTROIDS 256
 #define POINTS_PER_BATCH 240
-#define ITERS 50
 
 __global__ void kmeans_assignment_kernel(
     float* points, 
@@ -281,7 +280,7 @@ __global__ void kmeans_assignment_kernel(
     }
 }
 
-__global__ void kmeans_update_kernel(float* centroids, float* accumulators, int* counters, int iter) {
+__global__ void kmeans_update_kernel(float* centroids, float* accumulators, int* counters, int iter, int total_iters) {
     // 1 thread handles 1 centroid completely
     int c_idx = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -299,19 +298,24 @@ __global__ void kmeans_update_kernel(float* centroids, float* accumulators, int*
                 accumulators[idx] = 0.0f;
             }
             //Reset the counter to 0 for the next iteration
-            if (iter < ITERS-1) {
+            if (iter < total_iters - 1) {
                 counters[c_idx] = 0;
             }
         }
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <filename> <iters>\n";
+        return 1;
+    }
+
     int num_blocks = 1024;
     int threads_per_block = 256;
     
-    // Change this to your actual binary dataset filename
-    std::string filename = "sample_datasets/blobs_N245760_D16_K256.bin"; 
+    std::string filename = argv[1];
+    int ITERS = std::stoi(argv[2]);
     
     // 1. Open the file in binary mode and start at the end to get file size
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
@@ -405,7 +409,8 @@ int main() {
             d_centroids, 
             d_accumulators, 
             d_counters,
-            iter
+            iter,
+            ITERS
         );
         cudaDeviceSynchronize();
     }
@@ -423,19 +428,20 @@ int main() {
     cudaMemcpy(h_counters, d_counters, counters_bytes, cudaMemcpyDeviceToHost);
 
     // Verify some output (Optional)
-    std::cout << "\n--- Verification ---\n";
-    for (int i = 0; i < 2; ++i) {
-        std::cout << "Points assigned to Centroid" << i << ":" << h_counters[i] << "\n";
+    // std::cout << "\n--- Verification ---\n";
+    // for (int i = 0; i < 2; ++i) {
+    //     std::cout << "Points assigned to Centroid" << i << ":" << h_counters[i] << "\n";
     
-        std::cout << "Centroid" << i << "Coordinates: [ ";
-        for (int d = 0; d < DIMS; ++d) {
-            // Because of SoA layout, dimension 'd' for centroid '0' is at index (d * NUM_CENTROIDS + 0)
-            std::cout << h_centroids[d * NUM_CENTROIDS + i];
+    //     std::cout << "Centroid" << i << "Coordinates: [ ";
+    //     for (int d = 0; d < DIMS; ++d) {
+    //         // Because of SoA layout, dimension 'd' for centroid '0' is at index (d * NUM_CENTROIDS + 0)
+    //         std::cout << h_centroids[d * NUM_CENTROIDS + i];
             
-            if (d < DIMS - 1) std::cout << ", ";
-        }
-        std::cout << " ]\n"; 
-    }   
+    //         if (d < DIMS - 1) std::cout << ", ";
+    //     }
+    //     std::cout << " ]\n"; 
+    // }  
+
     // Free device memory
     cudaFree(d_points);
     cudaFree(d_centroids);

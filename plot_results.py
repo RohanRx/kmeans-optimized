@@ -2,8 +2,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-CSV_INPUT = "output/cpu_baseline.csv"
-PLOT_OUTPUT = "output/baseline_D16.png"
+CSV_INPUT = "output/gpu_optimized.csv"
+PLOT_OUTPUT = "output/optimized_D16.png"
 
 def main():
     if not os.path.exists(CSV_INPUT):
@@ -20,7 +20,7 @@ def main():
 
     plt.xlabel("Number of Points (N)")
     plt.ylabel("Latency (ms / iteration)")
-    plt.title("K-Means CPU Baseline: Latency vs Points")
+    plt.title("K-Means Optimized: Latency vs Points")
     plt.xscale('log')
     plt.yscale('log')
     plt.grid(True, which="both", ls="-", alpha=0.5)
