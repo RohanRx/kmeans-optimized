@@ -7,10 +7,8 @@
 #include <sstream>
 #include <string>
 
-
 #define DIMS 512
 #define NUM_CENTROIDS 5
-#define ITERS 1000
 
 __global__ void kmeans_assignment_kernel(
     float* points, 
@@ -89,37 +87,42 @@ __global__ void kmeans_assignment_kernel(
     }
 }
 
-__global__ void kmeans_update_kernel(float* centroids, float* accumulators, int* counters, int iter) {
-    // 1 thread handles 1 centroid completely
-    int c_idx = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void kmeans_update_kernel(float* centroids, float* accumulators, int* counters, int iter, int total_iters) {
+    int tid = threadIdx.x;
+    int total_elements = NUM_CENTROIDS * DIMS;
 
-    if (c_idx < NUM_CENTROIDS) {
+    // 1. Block-stride loop: 1024 threads will process all 2560 elements
+    for (int idx = tid; idx < total_elements; idx += blockDim.x) {
+        // Extract the centroid ID by taking the modulo
+        int c_idx = idx % NUM_CENTROIDS;
         int count = counters[c_idx];
 
-        // Guard against division by zero (if a cluster became empty)
+        // Guard against division by zero
         if (count > 0) {
-            for (int d = 0; d < DIMS; ++d) {
-                // Calculate SoA index
-                int idx = d * NUM_CENTROIDS + c_idx;
-                //Calculate the mean and set the new centroid position
-                centroids[idx] = accumulators[idx] / (float)count;
-                //Reset the accumulator to 0 for the next iteration
-                accumulators[idx] = 0.0f;
-            }
-            //Reset the counter to 0 for the next iteration
-            if (iter < ITERS-1) {
-                counters[c_idx] = 0;
-            }
+            centroids[idx] = accumulators[idx] / (float)count;
+            accumulators[idx] = 0.0f;
+        }
+    }
+    __syncthreads();
+
+    if (iter < total_iters - 1) {
+        if (tid < NUM_CENTROIDS) {
+            counters[tid] = 0;
         }
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <filename> <iters>\n";
+        return 1;
+    }
+
     int num_blocks = 1024;
     int threads_per_block = 256;
     
-    // Change this to your actual binary dataset filename
-    std::string filename = "sample_datasets/blobs_N245760_D16_K256.bin"; 
+    std::string filename = argv[1];
+    int ITERS = std::stoi(argv[2]);
     
     // 1. Open the file in binary mode and start at the end to get file size
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
@@ -209,11 +212,12 @@ int main() {
             total_points
         );
         cudaDeviceSynchronize();
-        kmeans_update_kernel<<<1, 256>>>(
+        kmeans_update_kernel<<<1, 1024>>>(
             d_centroids, 
             d_accumulators, 
             d_counters,
-            iter
+            iter,
+            ITERS
         );
         cudaDeviceSynchronize();
     }
@@ -231,19 +235,20 @@ int main() {
     cudaMemcpy(h_counters, d_counters, counters_bytes, cudaMemcpyDeviceToHost);
 
     // Verify some output (Optional)
-    std::cout << "\n--- Verification ---\n";
-    for (int i = 0; i < NUM_CENTROIDS; ++i) {
-        std::cout << "Points assigned to Centroid" << i << ":" << h_counters[i] << "\n";
+    // std::cout << "\n--- Verification ---\n";
+    // for (int i = 0; i < NUM_CENTROIDS; ++i) {
+    //     std::cout << "Points assigned to Centroid " << i << ":" << h_counters[i] << "\n";
     
-        std::cout << "Centroid" << i << "Coordinates: [ ";
-        for (int d = 0; d < DIMS; ++d) {
-            // Because of SoA layout, dimension 'd' for centroid '0' is at index (d * NUM_CENTROIDS + 0)
-            std::cout << h_centroids[d * NUM_CENTROIDS + i];
+    //     std::cout << "Centroid" << i << "Coordinates: [ ";
+    //     for (int d = 0; d < DIMS; ++d) {
+    //         // Because of SoA layout, dimension 'd' for centroid '0' is at index (d * NUM_CENTROIDS + 0)
+    //         std::cout << h_centroids[d * NUM_CENTROIDS + i];
             
-            if (d < DIMS - 1) std::cout << ", ";
-        }
-        std::cout << " ]\n"; 
-    }   
+    //         if (d < DIMS - 1) std::cout << ", ";
+    //     }
+    //     std::cout << " ]\n"; 
+    // } 
+
     // Free device memory
     cudaFree(d_points);
     cudaFree(d_centroids);

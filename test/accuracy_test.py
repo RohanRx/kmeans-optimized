@@ -71,4 +71,4 @@ def run_benchmark(filename, n_samples, n_features, K):
         print(f"Coordinates: [ {coords} ]\n")
 
 if __name__ == "__main__":
-    run_benchmark("sample_datasets/blobs_N245760_D16_K256.bin", 245760, 16, 256)
+    run_benchmark("data/D512/easy/blobs_N3840_D512_K5.bin", 3840, 512, 5)

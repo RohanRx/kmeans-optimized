@@ -3,27 +3,19 @@ import os
 import csv
 import time
 import pandas as pd
+import argparse
 
-BASE_DATA_DIR = "data_D16"
-CATEGORIES = ["easy", "hard"]
-OUTPUT_DIR = "output"
-CSV_INPUT = os.path.join(OUTPUT_DIR, "cpu_baseline.csv")
-GPU_CSV_OUTPUT = os.path.join(OUTPUT_DIR, "gpu_optimized.csv")
-
-CUDA_SRC = "kmeans.cu"
-CUDA_EXE = "./kmeans_optimized"
-
-def compile_cuda():
-    print("Compiling {}...".format(CUDA_SRC))
+def compile_cuda(CUDA_SRC, CUDA_EXE):
+    print(f"Compiling {CUDA_SRC}...")
     # Using sm_75 for Tesla T4 optimization
     cmd = ["nvcc", "-O3", "-arch=sm_75", CUDA_SRC, "-o", CUDA_EXE]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
-        print("Compilation Failed!\n{}".format(result.stderr))
+        print(f"Compilation Failed!\n{result.stderr}")
         exit(1)
-    print("Compilation successful.")
+    print("Compilation successful!")
 
-def run_gpu_benchmark(category, filename, n_samples, d_features, K, iters):
+def run_gpu_benchmark(category, filename, n_samples, d_features, K, iters, CUDA_EXE):
     # Pass filename and iters as command line arguments to the CUDA binary
     cmd = [CUDA_EXE, filename, str(iters)]
     
@@ -33,7 +25,7 @@ def run_gpu_benchmark(category, filename, n_samples, d_features, K, iters):
         end_wall = time.time()
         
         if result.returncode != 0:
-            print("Error running {}: {}".format(filename, result.stderr))
+            print(f"Error running {filename}: {result.stderr}")
             return None
 
         # Parse the custom CUDA output
@@ -59,26 +51,42 @@ def run_gpu_benchmark(category, filename, n_samples, d_features, K, iters):
             "ms_per_iter": ms_per_iter
         }
     except Exception as e:
-        print("Failed to run {}: {}".format(filename, e))
+        print(f"Failed to run {filename}: {e}")
         return None
 
 def main():
+    parser = argparse.ArgumentParser(description="K-Means GPU Benchmarking Tool")
+    parser.add_argument("-d", "--dimensions", type=int, choices=[16, 512], default=16, help="Dimensions (default: 16)")
+    parser.add_argument("-e", "--extra", type=str, default="", help="Suffix for output filename (e.g., _test)")
+    
+    args = parser.parse_args()
+
+    D = args.dimensions
+    EXTRA = args.extra
+    BASE_DATA_DIR = os.path.join("data", f"D{D}")
+    OUTPUT_DIR = os.path.join("output", f"D{D}")
+    
+    CSV_INPUT = os.path.join(OUTPUT_DIR, "cpu_baseline.csv")
+    GPU_CSV_OUTPUT = os.path.join(OUTPUT_DIR, f"gpu_optimized{EXTRA}.csv")
+    CUDA_SRC = f"kmeans{D}.cu"
+    CUDA_EXE = f"./kmeans{D}_optimized.x"
+
     if not os.path.exists(CSV_INPUT):
-        print("Baseline CSV not found at {}. Run baseline first.".format(CSV_INPUT))
+        print(f"Critical Error: Baseline CSV not found at {CSV_INPUT}")
         return
 
-    compile_cuda()
-    df = pd.read_csv(CSV_INPUT)
-    
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
+
+    compile_cuda(CUDA_SRC, CUDA_EXE)
+    df = pd.read_csv(CSV_INPUT)
     
     with open(GPU_CSV_OUTPUT, mode='w', newline='') as csv_file:
         fieldnames = ['category', 'n', 'd', 'k', 'iters', 'total_time_s', 'ms_per_iter']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
 
-        print("\n--- Benchmarking GPU Optimized Datasets ---")
+        print(f"\n--- Benchmarking D{D} GPU Optimized Datasets ---")
 
         for _, row in df.iterrows():
             cat = row['category']
@@ -89,13 +97,13 @@ def main():
             
             filename = os.path.join(BASE_DATA_DIR, cat, "blobs_N{}_D{}_K{}.bin".format(N, D, K))
             
-            res = run_gpu_benchmark(cat, filename, N, D, K, ITERS)
+            res = run_gpu_benchmark(cat, filename, N, D, K, ITERS, CUDA_EXE)
             
             if res:
                 writer.writerow(res)
                 csv_file.flush()
 
-    print("\n[✓] GPU results saved to: {}".format(GPU_CSV_OUTPUT))
+    print(f"\n[✓] Results saved to: {GPU_CSV_OUTPUT}")
 
 if __name__ == "__main__":
     main()

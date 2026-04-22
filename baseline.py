@@ -3,20 +3,29 @@ import numpy as np
 from sklearn.cluster import KMeans
 import os
 import csv
-
-BASE_DATA_DIR = "data_D16"
-CATEGORIES = ["easy", "hard"]
-OUTPUT_DIR = "output"
-CSV_OUTPUT = os.path.join(OUTPUT_DIR, "cpu_baseline.csv")
-
-ITERATIONS = 1000
+import argparse
 
 def load_bin(filename, n_samples, n_features):
     return np.fromfile(filename, dtype=np.float32).reshape(n_samples, n_features)
 
-def run_benchmark(category, filename, n_samples, n_features, K):
+def run_warmup(d, k):
+    X_warmup = np.random.rand(10000, d).astype(np.float32)
+    
+    warmup_model = KMeans(
+        n_clusters=k,
+        init='random',
+        n_init=1,
+        max_iter=10,
+        algorithm='full',
+        random_state=42
+    )
+    
+    warmup_model.fit(X_warmup)
+    print("Warmup complete!")
+
+def run_benchmark(category, filename, n_samples, n_features, K, iterations):
     if not os.path.exists(filename):
-        print("File not found: {}".format(filename))
+        print(f"File not found: {filename}")
         return None
 
     X = load_bin(filename, n_samples, n_features)
@@ -26,7 +35,7 @@ def run_benchmark(category, filename, n_samples, n_features, K):
         n_clusters=K,
         init=X[:K],
         n_init=1,
-        max_iter=ITERATIONS,
+        max_iter=iterations,
         algorithm='full',
         random_state=42
     )
@@ -37,10 +46,9 @@ def run_benchmark(category, filename, n_samples, n_features, K):
     
     total_time = end - start
     iters = model.n_iter_
-    ms_per_iter = (total_time / iters) * 1000
+    ms_per_iter = (total_time / iters) * 1000 if iters > 0 else 0.0
 
-    print("[{}] N: {:>8} | Iters: {:>3} | Time: {:.4f}s | Latency: {:.2f} ms/iter".format(
-          category.upper(), n_samples, iters, total_time, ms_per_iter))
+    print(f"[{category.upper()}] N: {n_samples:>8} | Iters: {iters:>3} | Time: {total_time:.4f}s | Latency: {ms_per_iter:.2f} ms/iter")
 
     return {
         "category": category,
@@ -53,9 +61,21 @@ def run_benchmark(category, filename, n_samples, n_features, K):
     }
 
 def main():
-    D = 16
-    K = 256
+    parser = argparse.ArgumentParser(description="Run CPU KMeans Benchmarks")
+    parser.add_argument("-d", "--dimensions", type=int, choices=[16, 512], default=16, help="Dimensions: 16 (K=256) or 512 (K=5)")
+    args = parser.parse_args()
+
+    D = args.dimensions
+    K = 256 if D == 16 else 5
+    ITERATIONS = 1000
+    CATEGORIES = ["easy", "hard"]
     
+    BASE_DATA_DIR = os.path.join("data", f"D{D}")
+    OUTPUT_DIR = os.path.join("output", f"D{D}")
+    CSV_OUTPUT = os.path.join(OUTPUT_DIR, "cpu_baseline.csv")
+
+    run_warmup(D, K)
+
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
     
@@ -65,11 +85,11 @@ def main():
         writer.writeheader()
 
         for cat in CATEGORIES:
-            print("\n--- Benchmarking {} Datasets ---".format(cat.upper()))
+            print(f"\n--- Benchmarking D{D} {cat.upper()} Datasets ---")
             folder = os.path.join(BASE_DATA_DIR, cat)
             
             if not os.path.exists(folder):
-                print("Directory not found: {}".format(folder))
+                print(f"Directory not found: {folder}")
                 continue
 
             # Sort files numerically by N
@@ -82,15 +102,15 @@ def main():
                     N = int(parts[1][1:]) 
                     path = os.path.join(folder, f)
                     
-                    res = run_benchmark(cat, path, N, D, K)
+                    res = run_benchmark(cat, path, N, D, K, ITERATIONS)
                     if res:
                         writer.writerow(res)
                         csv_file.flush()
                         
                 except Exception as e:
-                    print("Skipping {}: {}".format(f, e))
+                    print(f"Skipping {f}: {e}")
 
-    print("\n[✓] All results saved to: {}".format(CSV_OUTPUT))
+    print(f"\n[✓] All results saved to: {CSV_OUTPUT}")
 
 if __name__ == "__main__":
     main()
