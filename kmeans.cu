@@ -11,6 +11,7 @@
 #define DIMS 16
 #define NUM_CENTROIDS 256
 #define POINTS_PER_BATCH 240
+#define ITERS 50
 
 __global__ void kmeans_assignment_kernel(
     float* points, 
@@ -428,9 +429,9 @@ int main(int argc, char** argv) {
     cudaMemcpy(h_counters, d_counters, counters_bytes, cudaMemcpyDeviceToHost);
 
     // Verify some output (Optional)
-    // std::cout << "\n--- Verification ---\n";
-    // for (int i = 0; i < 2; ++i) {
-    //     std::cout << "Points assigned to Centroid" << i << ":" << h_counters[i] << "\n";
+    std::cout << "\n--- Verification ---\n";
+    for (int i = 0; i < 2; ++i) {
+        std::cout << "Points assigned to Centroid" << i << ":" << h_counters[i] << "\n";
     
     //     std::cout << "Centroid" << i << "Coordinates: [ ";
     //     for (int d = 0; d < DIMS; ++d) {
