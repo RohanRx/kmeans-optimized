@@ -16,7 +16,7 @@ def main():
     CPU_FILE = os.path.join(OUTPUT_DIR, "cpu_baseline.csv")
     GPU_FILE = os.path.join(OUTPUT_DIR, f"gpu_optimized{EXTRA}.csv")
     
-    PLOT_OUT = os.path.join(OUTPUT_DIR, f"speedup_analysis{EXTRA}.png")
+    PLOT_OUT = os.path.join(OUTPUT_DIR, f"plot_speedup_analysis{EXTRA}.png")
     TABLE_OUT = os.path.join(OUTPUT_DIR, f"speedup_results{EXTRA}.csv")
 
     if not os.path.exists(CPU_FILE) or not os.path.exists(GPU_FILE):
