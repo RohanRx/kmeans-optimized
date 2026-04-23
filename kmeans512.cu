@@ -43,41 +43,59 @@ __global__ void kmeans_assignment_kernel(
         float reg_A[BATCH_SIZE];
         float reg_B[BATCH_SIZE];
 
-        // 1. Initial Load: Fill reg_A with the first batch
+        // 1. Initial Load: Prime the first buffer (reg_A)
         #pragma unroll
         for (int d = 0; d < BATCH_SIZE; ++d) {
             reg_A[d] = points[d * total_points + p];
         }
 
-        // 2. Pipelined Loop
-        for (int b = 0; b < DIMS; b += BATCH_SIZE) {
-            int next_b = b + BATCH_SIZE;
-
-            // Start loading next batch into reg_B while computing reg_A
-            if (next_b < DIMS) {
+        // 2. Ping-Pong Pipelined Loop (Unrolled by 2)
+        for (int b = 0; b < DIMS; b += 2 * BATCH_SIZE) {
+            
+            // --- PHASE 1: Compute on reg_A, Load into reg_B ---
+            int next_b_idx = b + BATCH_SIZE;
+            if (next_b_idx < DIMS) {
                 #pragma unroll
                 for (int d = 0; d < BATCH_SIZE; ++d) {
-                    reg_B[d] = points[(next_b + d) * total_points + p];
+                    reg_B[d] = points[(next_b_idx + d) * total_points + p];
                 }
             }
 
             // Compute distances for current batch (reg_A)
             #pragma unroll
             for (int d = 0; d < BATCH_SIZE; ++d) {
-                int current_dim = b + d;
-                float p_val = reg_A[d];
-                
-                for (int c = 0; c < NUM_CENTROIDS; ++c) {
-                    float c_val = s_centroids[current_dim * NUM_CENTROIDS + c];
-                    float diff = p_val - c_val;
-                    dists[c] += diff * diff;
+                int dim_idx = b + d;
+                if (dim_idx < DIMS) { // Safety check for non-multiples of BATCH_SIZE
+                    float p_val = reg_A[d];
+                    for (int c = 0; c < NUM_CENTROIDS; ++c) {
+                        float c_val = s_centroids[dim_idx * NUM_CENTROIDS + c];
+                        float diff = p_val - c_val;
+                        dists[c] += diff * diff;
+                    }
                 }
             }
 
-            // Move reg_B to reg_A for the next iteration
+            // --- PHASE 2: Compute on reg_B, Load into reg_A ---
+            int next_a_idx = b + 2 * BATCH_SIZE;
+            if (next_a_idx < DIMS) {
+                #pragma unroll
+                for (int d = 0; d < BATCH_SIZE; ++d) {
+                    reg_A[d] = points[(next_a_idx + d) * total_points + p];
+                }
+            }
+
+            // Compute distances for next batch (reg_B)
             #pragma unroll
             for (int d = 0; d < BATCH_SIZE; ++d) {
-                reg_A[d] = reg_B[d];
+                int dim_idx = next_b_idx + d;
+                if (dim_idx < DIMS) { // Safety check for non-multiples of BATCH_SIZE
+                    float p_val = reg_B[d];
+                    for (int c = 0; c < NUM_CENTROIDS; ++c) {
+                        float c_val = s_centroids[dim_idx * NUM_CENTROIDS + c];
+                        float diff = p_val - c_val;
+                        dists[c] += diff * diff;
+                    }
+                }
             }
         }
 
@@ -94,8 +112,8 @@ __global__ void kmeans_assignment_kernel(
         l_counters[best_centroid]++;
 
         // 4. Update shared accumulators 
-        // (Note: To maximize efficiency, we'd ideally use the batched 
-        // registers here, but for clarity, we re-load or use a similar loop)
+        // We re-read points from global memory here. Because we just traversed 
+        // this exact memory, it will be served highly efficiently from the L1/L2 cache.
         for (int d = 0; d < DIMS; ++d) {
             float val = points[d * total_points + p];
             atomicAdd(&s_accumulators[d * NUM_CENTROIDS + best_centroid], val);
@@ -156,7 +174,7 @@ int main(int argc, char** argv) {
     }
 
     int num_blocks = 1024;
-    int threads_per_block = 256;
+    int threads_per_block = 384;
     
     std::string filename = argv[1];
     int ITERS = std::stoi(argv[2]);
