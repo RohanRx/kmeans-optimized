@@ -100,8 +100,6 @@ __global__ void kmeans_assignment_kernel(
         float p_regs[16][5] = {0.0};
 
         for (int p_base = 0; p_base < points_per_warp; p_base += 5) { 
-            
-            // 1. Load a batch of 5 points into registers explicitly
             int p_idx_0 = warp_point_start + p_base + 0;
             int p_idx_1 = warp_point_start + p_base + 1;
             int p_idx_2 = warp_point_start + p_base + 2;
@@ -116,7 +114,6 @@ __global__ void kmeans_assignment_kernel(
                 p_regs[d][4] = s_points[d * POINTS_PER_BATCH + p_idx_4];
             }
 
-            // 2. Initialize distance and centroid tracking for all 5 points
             float min_dist_0 = FLT_MAX;
             float min_dist_1 = FLT_MAX;
             float min_dist_2 = FLT_MAX;
@@ -129,7 +126,7 @@ __global__ void kmeans_assignment_kernel(
             int closest_centroid_3 = -1;
             int closest_centroid_4 = -1;
 
-            // 3. Loop centroids (all threads in warp get different centroids)
+            // Loop centroids
             for (int c = 0; c < 8; ++c) { 
                 int c_idx = lane + c * 32; 
                 
@@ -164,7 +161,7 @@ __global__ void kmeans_assignment_kernel(
                 if (dist_4 < min_dist_4) { min_dist_4 = dist_4; closest_centroid_4 = c_idx; }
             }
 
-            // 4. Warp reduction to find the global closest centroid for all 5 points
+            // Warp reduction to find the global closest centroid for all 5 points
             for (int offset = 16; offset > 0; offset /= 2) {
                 float other_dist_0 = __shfl_down_sync(0xFFFFFFFF, min_dist_0, offset);
                 int other_centroid_0 = __shfl_down_sync(0xFFFFFFFF, closest_centroid_0, offset);
@@ -187,7 +184,7 @@ __global__ void kmeans_assignment_kernel(
                 if (other_dist_4 < min_dist_4) { min_dist_4 = other_dist_4; closest_centroid_4 = other_centroid_4; }
             }
 
-            // 5. Atomically add to accumulator (lane 0 only)
+            // Atomically add to accumulator (lane 0 only)
             if (lane == 0) {
                 atomicAdd(&s_counters[closest_centroid_0], 1);
                 atomicAdd(&s_counters[closest_centroid_1], 1);
@@ -207,7 +204,7 @@ __global__ void kmeans_assignment_kernel(
         __syncthreads();
         batch_idx += gridDim.x;
     }
-    // all batches are done from this block, now we can globally flush to main memory
+    // All batches are done from this block, now we can globally flush to main memory
     for (int i = tid; i < NUM_CENTROIDS * DIMS; i += blockDim.x) {
         // Find which centroid this specific dimension belongs to
         int c_idx = i % NUM_CENTROIDS; 
@@ -228,7 +225,6 @@ __global__ void kmeans_update_kernel(float* centroids, float* accumulators, int*
     int tid = threadIdx.x;
     int total_elements = NUM_CENTROIDS * DIMS;
 
-    // 1. Block-stride loop: 1024 threads will process all 2560 elements
     for (int idx = tid; idx < total_elements; idx += blockDim.x) {
         // Extract the centroid ID by taking the modulo
         int c_idx = idx % NUM_CENTROIDS;
@@ -261,7 +257,6 @@ int main(int argc, char** argv) {
     std::string filename = argv[1];
     int ITERS = std::stoi(argv[2]);
     
-    // 1. Open the file in binary mode and start at the end to get file size
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
     if (!file.is_open()) {
@@ -278,7 +273,6 @@ int main(int argc, char** argv) {
 
     std::cout << "Reading binary dataset...\n";
 
-    // 2. Read the entire raw binary dump directly into our AoS vector
     std::vector<float> temp_aos_points(total_floats);
     if (!file.read(reinterpret_cast<char*>(temp_aos_points.data()), file_size)) {
         std::cerr << "Error: Failed to read binary data completely.\n";
@@ -299,14 +293,13 @@ int main(int argc, char** argv) {
     float* h_accumulators = (float*)malloc(accumulators_bytes);
     int* h_counters = (int*)malloc(counters_bytes);
 
-    // 3. Convert AoS (Binary layout) to SoA (Kernel layout) directly
+    // Convert AoS (Binary layout) to SoA (Kernel layout) directly
     for (int p = 0; p < total_points; ++p) {
         for (int d = 0; d < DIMS; ++d) {
             h_points[d * total_points + p] = temp_aos_points[p * DIMS + d];
         }
     }
 
-    // 4. Initialize Centroids (Picking the first NUM_CENTROIDS points from the dataset)
     for (int c = 0; c < NUM_CENTROIDS; ++c) {
         for (int d = 0; d < DIMS; ++d) {
             h_centroids[d * NUM_CENTROIDS + c] = temp_aos_points[c * DIMS + d];

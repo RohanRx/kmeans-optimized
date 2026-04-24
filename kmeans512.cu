@@ -43,16 +43,12 @@ __global__ void kmeans_assignment_kernel(
         float reg_A[BATCH_SIZE];
         float reg_B[BATCH_SIZE];
 
-        // 1. Initial Load: Prime the first buffer (reg_A)
         #pragma unroll
         for (int d = 0; d < BATCH_SIZE; ++d) {
             reg_A[d] = points[d * total_points + p];
         }
 
-        // 2. Ping-Pong Pipelined Loop (Unrolled by 2)
         for (int b = 0; b < DIMS; b += 2 * BATCH_SIZE) {
-            
-            // --- PHASE 1: Compute on reg_A, Load into reg_B ---
             int next_b_idx = b + BATCH_SIZE;
             if (next_b_idx < DIMS) {
                 #pragma unroll
@@ -75,7 +71,6 @@ __global__ void kmeans_assignment_kernel(
                 }
             }
 
-            // --- PHASE 2: Compute on reg_B, Load into reg_A ---
             int next_a_idx = b + 2 * BATCH_SIZE;
             if (next_a_idx < DIMS) {
                 #pragma unroll
@@ -99,7 +94,7 @@ __global__ void kmeans_assignment_kernel(
             }
         }
 
-        // 3. Find best centroid
+        // mFind best centroid
         float min_dist = FLT_MAX;
         int best_centroid = 0;
         for (int c = 0; c < NUM_CENTROIDS; ++c) {
@@ -111,9 +106,7 @@ __global__ void kmeans_assignment_kernel(
 
         l_counters[best_centroid]++;
 
-        // 4. Update shared accumulators 
-        // We re-read points from global memory here. Because we just traversed 
-        // this exact memory, it will be served highly efficiently from the L1/L2 cache.
+        // Update shared accumulators 
         for (int d = 0; d < DIMS; ++d) {
             float val = points[d * total_points + p];
             atomicAdd(&s_accumulators[d * NUM_CENTROIDS + best_centroid], val);
@@ -146,7 +139,6 @@ __global__ void kmeans_update_kernel(float* centroids, float* accumulators, int*
     int tid = threadIdx.x;
     int total_elements = NUM_CENTROIDS * DIMS;
 
-    // 1. Block-stride loop: 1024 threads will process all 2560 elements
     for (int idx = tid; idx < total_elements; idx += blockDim.x) {
         // Extract the centroid ID by taking the modulo
         int c_idx = idx % NUM_CENTROIDS;
@@ -179,7 +171,6 @@ int main(int argc, char** argv) {
     std::string filename = argv[1];
     int ITERS = std::stoi(argv[2]);
     
-    // 1. Open the file in binary mode and start at the end to get file size
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
     if (!file.is_open()) {
@@ -196,7 +187,6 @@ int main(int argc, char** argv) {
 
     std::cout << "Reading binary dataset...\n";
 
-    // 2. Read the entire raw binary dump directly into our AoS vector
     std::vector<float> temp_aos_points(total_floats);
     if (!file.read(reinterpret_cast<char*>(temp_aos_points.data()), file_size)) {
         std::cerr << "Error: Failed to read binary data completely.\n";
@@ -217,14 +207,13 @@ int main(int argc, char** argv) {
     float* h_accumulators = (float*)malloc(accumulators_bytes);
     int* h_counters = (int*)malloc(counters_bytes);
 
-    // 3. Convert AoS (Binary layout) to SoA (Kernel layout) directly
+    // Convert AoS (Binary layout) to SoA (Kernel layout) directly
     for (int p = 0; p < total_points; ++p) {
         for (int d = 0; d < DIMS; ++d) {
             h_points[d * total_points + p] = temp_aos_points[p * DIMS + d];
         }
     }
 
-    // 4. Initialize Centroids (Picking the first NUM_CENTROIDS points from the dataset)
     for (int c = 0; c < NUM_CENTROIDS; ++c) {
         for (int d = 0; d < DIMS; ++d) {
             h_centroids[d * NUM_CENTROIDS + c] = temp_aos_points[c * DIMS + d];
@@ -289,16 +278,16 @@ int main(int argc, char** argv) {
     cudaMemcpy(h_centroids, d_centroids, centroids_bytes, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_counters, d_counters, counters_bytes, cudaMemcpyDeviceToHost);
 
-    //Verify some output (Optional)
-    std::cout << "\n--- Verification ---\n";
-    for (int i = 0; i < NUM_CENTROIDS; ++i) {
-        std::cout << "Points assigned to Centroid " << i << ":" << h_counters[i] << "\n";
-        std::cout << "Centroid" << i << "Coordinates: [ ";
-        for (int d = 0; d < 5; ++d) {
-            std::cout << h_centroids[d * NUM_CENTROIDS + i];
-        }
-        std::cout << " ]\n"; 
-    } 
+    // Verify some output (Optional)
+    // std::cout << "\n--- Verification ---\n";
+    // for (int i = 0; i < NUM_CENTROIDS; ++i) {
+    //     std::cout << "Points assigned to Centroid " << i << ":" << h_counters[i] << "\n";
+    //     std::cout << "Centroid" << i << "Coordinates: [ ";
+    //     for (int d = 0; d < 5; ++d) {
+    //         std::cout << h_centroids[d * NUM_CENTROIDS + i];
+    //     }
+    //     std::cout << " ]\n"; 
+    // } 
 
     // Free device memory
     cudaFree(d_points);
