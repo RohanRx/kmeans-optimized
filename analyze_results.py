@@ -70,14 +70,16 @@ def main():
     print(report_formatted.to_string(index=False))
 
     # Summary Stats
-    avg_speedup = df['speedup'].mean()
-    peak_speedup = df['speedup'].max()
-    min_speedup = df['speedup'].min()
+    print("\n--- GPU Acceleration Summary (Per Dataset) ---")
 
-    print("\n--- GPU Acceleration Summary ---")
-    print(f"Max Speedup:     {peak_speedup:.2f}x")
-    print(f"Minimum Speedup: {min_speedup:.2f}x")
-    print(f"Average Speedup: {avg_speedup:.2f}x")
+    summary = df.groupby('category')['speedup'].agg(['min', 'max', 'mean']).reset_index()
+    summary.columns = ['Dataset', 'Min Speedup', 'Max Speedup', 'Avg Speedup']
+    
+    for _, row in summary.iterrows():
+        print(f"\n{row['Dataset'].capitalize()} Dataset:")
+        print(f"  Max Speedup:     {row['Max Speedup']:.2f}x")
+        print(f"  Minimum Speedup: {row['Min Speedup']:.2f}x")
+        print(f"  Average Speedup: {row['Avg Speedup']:.2f}x")
 
 if __name__ == "__main__":
     main()
